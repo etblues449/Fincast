@@ -1,0 +1,698 @@
+import { useState, useEffect } from "react";
+
+// ─── Theme ───────────────────────────────────────────────────────────────────
+const COLORS = {
+  bg: "#0A0A0F",
+  surface: "#12121A",
+  card: "#1A1A26",
+  border: "#2A2A3E",
+  accent: "#00E5A0",
+  accentDim: "#00E5A020",
+  accentHover: "#00FFB3",
+  gold: "#FFD166",
+  muted: "#6B6B8A",
+  text: "#E8E8F0",
+  textDim: "#9898B8",
+};
+
+const FONTS = `
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap');
+`;
+
+// ─── Data ─────────────────────────────────────────────────────────────────────
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const POST_DAYS = [3, 5, 0]; // Wed, Fri, Sun
+const GROWTH_DATA = [
+  { month: "Nov", subs: 0, views: 0 },
+  { month: "Dec", subs: 120, views: 1400 },
+  { month: "Jan", subs: 310, views: 3800 },
+  { month: "Feb", subs: 580, views: 7200 },
+  { month: "Mar", subs: 940, views: 13500 },
+  { month: "Apr", subs: 1420, views: 22000 },
+];
+
+const INITIAL_VIDEOS = [
+  { id: 1, title: "How I Saved ₹10L in 3 Years on a CA Salary", status: "published", date: "2026-04-16", views: 4200, type: "long" },
+  { id: 2, title: "SIP vs Lump Sum: Which Actually Wins? (Data Deep Dive)", status: "published", date: "2026-04-18", views: 2800, type: "long" },
+  { id: 3, title: "5 Tax Mistakes Salaried People Make Every Year", status: "scheduled", date: "2026-04-23", views: 0, type: "long" },
+  { id: 4, title: "Credit Score Myths Busted by a CA", status: "draft", date: "2026-04-25", views: 0, type: "short" },
+  { id: 5, title: "Emergency Fund: The Right Formula", status: "idea", date: "2026-04-27", views: 0, type: "long" },
+];
+
+// ─── Claude API ───────────────────────────────────────────────────────────────
+async function callClaude(systemPrompt, userPrompt) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+    }),
+  });
+  const data = await res.json();
+  return data.content?.[0]?.text || "";
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const css = `
+  ${FONTS}
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: ${COLORS.bg}; color: ${COLORS.text}; font-family: 'Syne', sans-serif; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: ${COLORS.surface}; }
+  ::-webkit-scrollbar-thumb { background: ${COLORS.border}; border-radius: 2px; }
+
+  .app { display: flex; min-height: 100vh; }
+
+  /* Sidebar */
+  .sidebar {
+    width: 220px; min-width: 220px; background: ${COLORS.surface};
+    border-right: 1px solid ${COLORS.border}; padding: 28px 0;
+    display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh;
+  }
+  .logo { padding: 0 24px 28px; border-bottom: 1px solid ${COLORS.border}; }
+  .logo-text { font-size: 18px; font-weight: 800; color: ${COLORS.accent}; letter-spacing: -0.5px; }
+  .logo-sub { font-size: 11px; color: ${COLORS.muted}; font-family: 'DM Mono', monospace; margin-top: 2px; }
+  .nav { padding: 20px 12px; flex: 1; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;
+    color: ${COLORS.textDim}; transition: all 0.15s; margin-bottom: 2px; border: none; background: none; width: 100%; text-align: left;
+  }
+  .nav-item:hover { color: ${COLORS.text}; background: ${COLORS.card}; }
+  .nav-item.active { color: ${COLORS.accent}; background: ${COLORS.accentDim}; }
+  .nav-icon { font-size: 16px; width: 20px; text-align: center; }
+
+  /* Main */
+  .main { flex: 1; padding: 32px; overflow-y: auto; }
+  .page-title { font-size: 26px; font-weight: 800; margin-bottom: 4px; }
+  .page-sub { font-size: 13px; color: ${COLORS.muted}; margin-bottom: 28px; font-family: 'DM Mono', monospace; }
+
+  /* Cards */
+  .card {
+    background: ${COLORS.card}; border: 1px solid ${COLORS.border};
+    border-radius: 12px; padding: 20px;
+  }
+  .card-title { font-size: 12px; font-weight: 700; color: ${COLORS.muted}; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 16px; }
+
+  /* Grid */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  .col-2 { grid-column: span 2; }
+
+  /* Stats */
+  .stat-val { font-size: 32px; font-weight: 800; color: ${COLORS.text}; line-height: 1; }
+  .stat-label { font-size: 12px; color: ${COLORS.muted}; margin-top: 4px; font-family: 'DM Mono', monospace; }
+  .stat-delta { font-size: 11px; color: ${COLORS.accent}; margin-top: 6px; }
+
+  /* Status badges */
+  .badge {
+    display: inline-block; padding: 3px 8px; border-radius: 4px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; font-family: 'DM Mono', monospace;
+  }
+  .badge-published { background: #00E5A020; color: ${COLORS.accent}; }
+  .badge-scheduled { background: #FFD16620; color: ${COLORS.gold}; }
+  .badge-draft { background: #6B6B8A20; color: ${COLORS.muted}; }
+  .badge-idea { background: #7B7BFF20; color: #9B9BFF; }
+  .badge-short { background: #FF6B9D20; color: #FF6B9D; }
+
+  /* Video list */
+  .video-row {
+    display: flex; align-items: center; gap: 12px; padding: 12px 0;
+    border-bottom: 1px solid ${COLORS.border};
+  }
+  .video-row:last-child { border-bottom: none; }
+  .video-title { font-size: 13px; font-weight: 600; flex: 1; }
+  .video-date { font-size: 11px; color: ${COLORS.muted}; font-family: 'DM Mono', monospace; }
+  .video-views { font-size: 13px; font-weight: 700; color: ${COLORS.textDim}; min-width: 60px; text-align: right; }
+
+  /* Calendar */
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  .cal-header { font-size: 11px; font-weight: 700; text-align: center; color: ${COLORS.muted}; padding: 4px 0; font-family: 'DM Mono', monospace; }
+  .cal-day {
+    aspect-ratio: 1; border-radius: 6px; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; cursor: pointer; position: relative; font-weight: 600;
+    background: ${COLORS.surface}; color: ${COLORS.textDim}; transition: all 0.15s;
+  }
+  .cal-day.post-day { background: ${COLORS.accentDim}; color: ${COLORS.accent}; }
+  .cal-day.today { border: 1.5px solid ${COLORS.accent}; color: ${COLORS.text}; }
+  .cal-day.has-video::after {
+    content: ''; position: absolute; bottom: 3px; width: 4px; height: 4px;
+    border-radius: 50%; background: ${COLORS.gold};
+  }
+  .cal-day.empty { background: transparent; cursor: default; }
+
+  /* AI Tool */
+  .ai-output {
+    background: ${COLORS.surface}; border: 1px solid ${COLORS.border};
+    border-radius: 8px; padding: 16px; font-size: 13px; line-height: 1.7;
+    min-height: 80px; white-space: pre-wrap; font-family: 'DM Mono', monospace;
+    color: ${COLORS.textDim};
+  }
+  .ai-loading { color: ${COLORS.accent}; animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  /* Buttons */
+  .btn {
+    padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 700;
+    cursor: pointer; border: none; font-family: 'Syne', sans-serif; transition: all 0.15s;
+  }
+  .btn-primary { background: ${COLORS.accent}; color: #000; }
+  .btn-primary:hover { background: ${COLORS.accentHover}; transform: translateY(-1px); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .btn-ghost { background: transparent; color: ${COLORS.textDim}; border: 1px solid ${COLORS.border}; }
+  .btn-ghost:hover { border-color: ${COLORS.accent}; color: ${COLORS.accent}; }
+  .btn-sm { padding: 6px 12px; font-size: 12px; }
+
+  /* Input */
+  .input {
+    width: 100%; background: ${COLORS.surface}; border: 1px solid ${COLORS.border};
+    border-radius: 8px; padding: 10px 14px; font-size: 13px; color: ${COLORS.text};
+    font-family: 'Syne', sans-serif; outline: none; transition: border-color 0.15s;
+  }
+  .input:focus { border-color: ${COLORS.accent}; }
+  .input::placeholder { color: ${COLORS.muted}; }
+  select.input { cursor: pointer; }
+
+  /* Bar chart */
+  .bar-chart { display: flex; align-items: flex-end; gap: 8px; height: 80px; }
+  .bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; }
+  .bar { width: 100%; border-radius: 4px 4px 0 0; background: ${COLORS.accentDim}; transition: all 0.3s; min-height: 2px; }
+  .bar:hover { background: ${COLORS.accent}; }
+  .bar-label { font-size: 10px; color: ${COLORS.muted}; font-family: 'DM Mono', monospace; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+  .tab {
+    padding: 8px 16px; border-radius: 6px; font-size: 12px; font-weight: 700;
+    cursor: pointer; border: none; font-family: 'Syne', sans-serif; transition: all 0.15s;
+    background: transparent; color: ${COLORS.muted};
+  }
+  .tab:hover { color: ${COLORS.text}; }
+  .tab.active { background: ${COLORS.accentDim}; color: ${COLORS.accent}; }
+
+  /* Script sections */
+  .script-section { margin-bottom: 16px; }
+  .script-section-title { font-size: 11px; font-weight: 700; color: ${COLORS.gold}; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px; }
+
+  /* Checklist */
+  .check-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid ${COLORS.border}; }
+  .check-item:last-child { border-bottom: none; }
+  .check-box {
+    width: 18px; height: 18px; border-radius: 4px; border: 1.5px solid ${COLORS.border};
+    cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .check-box.checked { background: ${COLORS.accent}; border-color: ${COLORS.accent}; color: #000; font-size: 11px; }
+  .check-text { font-size: 13px; flex: 1; }
+  .check-text.done { text-decoration: line-through; color: ${COLORS.muted}; }
+
+  .section-gap { margin-bottom: 20px; }
+  .flex { display: flex; }
+  .flex-between { display: flex; justify-content: space-between; align-items: center; }
+  .gap-8 { gap: 8px; }
+  .gap-12 { gap: 12px; }
+  .mb-4 { margin-bottom: 4px; }
+  .mb-8 { margin-bottom: 8px; }
+  .mb-12 { margin-bottom: 12px; }
+  .mb-16 { margin-bottom: 16px; }
+  .text-accent { color: ${COLORS.accent}; }
+  .text-gold { color: ${COLORS.gold}; }
+  .text-muted { color: ${COLORS.muted}; font-size: 12px; }
+  .text-mono { font-family: 'DM Mono', monospace; }
+`;
+
+// ─── Components ───────────────────────────────────────────────────────────────
+
+function Sidebar({ active, setActive }) {
+  const nav = [
+    { id: "dashboard", icon: "▦", label: "Dashboard" },
+    { id: "schedule", icon: "◫", label: "Schedule" },
+    { id: "ideas", icon: "✦", label: "AI Ideas" },
+    { id: "script", icon: "◈", label: "AI Script" },
+    { id: "growth", icon: "↗", label: "Growth" },
+    { id: "checklist", icon: "✓", label: "Pre-publish" },
+  ];
+  return (
+    <div className="sidebar">
+      <div className="logo">
+        <div className="logo-text">FinCast ✦</div>
+        <div className="logo-sub">CA • Personal Finance</div>
+      </div>
+      <nav className="nav">
+        {nav.map(n => (
+          <button key={n.id} className={`nav-item ${active === n.id ? "active" : ""}`} onClick={() => setActive(n.id)}>
+            <span className="nav-icon">{n.icon}</span>
+            {n.label}
+          </button>
+        ))}
+      </nav>
+      <div style={{ padding: "16px 24px", borderTop: `1px solid ${COLORS.border}` }}>
+        <div style={{ fontSize: 11, color: COLORS.muted, fontFamily: "'DM Mono', monospace" }}>Post days</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text, marginTop: 4 }}>Wed · Fri · Sun</div>
+        <div style={{ fontSize: 11, color: COLORS.accent, marginTop: 2 }}>Best: Wed 4PM</div>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ videos, setPage }) {
+  const published = videos.filter(v => v.status === "published");
+  const totalViews = published.reduce((a, v) => a + v.views, 0);
+  const upcoming = videos.filter(v => v.status === "scheduled" || v.status === "draft").slice(0, 3);
+
+  return (
+    <div>
+      <div className="page-title">Dashboard</div>
+      <div className="page-sub">Your channel at a glance</div>
+
+      <div className="grid-3 section-gap">
+        {[
+          { val: "1,420", label: "Subscribers", delta: "+480 this month" },
+          { val: totalViews.toLocaleString(), label: "Total Views", delta: "+8.5K this month" },
+          { val: published.length, label: "Videos Published", delta: `${videos.filter(v => v.status === "scheduled").length} scheduled` },
+        ].map(s => (
+          <div className="card" key={s.label}>
+            <div className="stat-val">{s.val}</div>
+            <div className="stat-label">{s.label}</div>
+            <div className="stat-delta">{s.delta}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid-2 section-gap">
+        <div className="card">
+          <div className="card-title">Upcoming Videos</div>
+          {upcoming.map(v => (
+            <div className="video-row" key={v.id}>
+              <span className={`badge badge-${v.status}`}>{v.status}</span>
+              <span className="video-title">{v.title}</span>
+              <span className="video-date">{v.date}</span>
+            </div>
+          ))}
+          {upcoming.length === 0 && <div className="text-muted">No upcoming videos</div>}
+        </div>
+        <div className="card">
+          <div className="card-title">Top Performers</div>
+          {published.sort((a, b) => b.views - a.views).slice(0, 3).map(v => (
+            <div className="video-row" key={v.id}>
+              <span className="video-title">{v.title}</span>
+              <span className="video-views">{v.views.toLocaleString()} ▶</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="flex-between mb-12">
+          <div className="card-title" style={{ margin: 0 }}>Quick Actions</div>
+        </div>
+        <div className="flex gap-8">
+          <button className="btn btn-primary" onClick={() => setPage("ideas")}>✦ Generate Video Ideas</button>
+          <button className="btn btn-ghost" onClick={() => setPage("script")}>◈ Write a Script</button>
+          <button className="btn btn-ghost" onClick={() => setPage("schedule")}>◫ Open Schedule</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Schedule({ videos, setVideos }) {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const monthName = today.toLocaleString("default", { month: "long" });
+
+  const videosByDate = {};
+  videos.forEach(v => { videosByDate[v.date] = v; });
+
+  const cells = [];
+  for (let i = 0; i < firstDay; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const dateStr = (d) => `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  const isPostDay = (d) => POST_DAYS.includes(new Date(year, month, d).getDay());
+  const isToday = (d) => d === today.getDate();
+
+  const [newTitle, setNewTitle] = useState("");
+  const [newDate, setNewDate] = useState("");
+  const [newType, setNewType] = useState("long");
+
+  const addVideo = () => {
+    if (!newTitle || !newDate) return;
+    setVideos(v => [...v, { id: Date.now(), title: newTitle, status: "scheduled", date: newDate, views: 0, type: newType }]);
+    setNewTitle(""); setNewDate("");
+  };
+
+  return (
+    <div>
+      <div className="page-title">Content Schedule</div>
+      <div className="page-sub">Wed · Fri · Sun posting cadence</div>
+
+      <div className="grid-2 section-gap">
+        <div className="card">
+          <div className="card-title">{monthName} {year}</div>
+          <div className="cal-grid mb-12">
+            {DAYS.map(d => <div key={d} className="cal-header">{d}</div>)}
+            {cells.map((d, i) => (
+              <div key={i} className={`cal-day ${!d ? "empty" : ""} ${d && isPostDay(d) ? "post-day" : ""} ${d && isToday(d) ? "today" : ""} ${d && videosByDate[dateStr(d)] ? "has-video" : ""}`}>
+                {d}
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-8" style={{ flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11, color: COLORS.muted }}>
+              <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: COLORS.accentDim, marginRight: 4 }}></span>Post day
+            </span>
+            <span style={{ fontSize: 11, color: COLORS.muted }}>
+              <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: COLORS.gold, marginRight: 4 }}></span>Video scheduled
+            </span>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-title">All Videos</div>
+          <div style={{ maxHeight: 320, overflowY: "auto" }}>
+            {videos.map(v => (
+              <div className="video-row" key={v.id}>
+                <div style={{ flex: 1 }}>
+                  <div className="video-title mb-4">{v.title}</div>
+                  <div className="flex gap-8">
+                    <span className={`badge badge-${v.status}`}>{v.status}</span>
+                    {v.type === "short" && <span className="badge badge-short">short</span>}
+                    <span className="video-date">{v.date}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Add Video</div>
+        <div className="flex gap-8" style={{ flexWrap: "wrap" }}>
+          <input className="input" placeholder="Video title" value={newTitle} onChange={e => setNewTitle(e.target.value)} style={{ flex: 2, minWidth: 200 }} />
+          <input className="input" type="date" value={newDate} onChange={e => setNewDate(e.target.value)} style={{ flex: 1, minWidth: 140 }} />
+          <select className="input" value={newType} onChange={e => setNewType(e.target.value)} style={{ flex: 1, minWidth: 100 }}>
+            <option value="long">Long-form</option>
+            <option value="short">Short</option>
+          </select>
+          <button className="btn btn-primary" onClick={addVideo}>+ Add</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Ideas() {
+  const [topic, setTopic] = useState("");
+  const [style, setStyle] = useState("evergreen");
+  const [ideas, setIdeas] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const generate = async () => {
+    setLoading(true);
+    setIdeas("");
+    try {
+      const sys = `You are a YouTube content strategist for a faceless finance channel run by a Chartered Accountant (CA) in India. The channel covers personal finance and investing for a general Indian audience. Generate video ideas that leverage the CA credential as authority. Keep titles punchy, curiosity-driven, and SEO-friendly. Format: numbered list of 6 ideas, each with a one-line hook underneath.`;
+      const prompt = `Generate 6 YouTube video ideas for: "${topic || "personal finance and investing"}". Style: ${style}. Make them specific, relatable to salaried Indians, and authoritative.`;
+      const res = await callClaude(sys, prompt);
+      setIdeas(res);
+    } catch {
+      setIdeas("Error generating ideas. Please try again.");
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div>
+      <div className="page-title">AI Video Ideas</div>
+      <div className="page-sub">Generate content ideas tailored to your CA niche</div>
+
+      <div className="card section-gap">
+        <div className="card-title">What do you want to cover?</div>
+        <div className="flex gap-8 mb-12" style={{ flexWrap: "wrap" }}>
+          <input className="input" placeholder="e.g. mutual funds, tax saving, credit cards..." value={topic} onChange={e => setTopic(e.target.value)} style={{ flex: 2, minWidth: 200 }} />
+          <select className="input" value={style} onChange={e => setStyle(e.target.value)} style={{ flex: 1, minWidth: 140 }}>
+            <option value="evergreen">Evergreen</option>
+            <option value="trending">Trending / News-based</option>
+            <option value="beginner">Beginner-friendly</option>
+            <option value="advanced">Advanced / Deep-dive</option>
+            <option value="shorts">YouTube Shorts</option>
+          </select>
+          <button className="btn btn-primary" onClick={generate} disabled={loading}>
+            {loading ? "Generating..." : "✦ Generate Ideas"}
+          </button>
+        </div>
+        <div className={`ai-output ${loading ? "ai-loading" : ""}`}>
+          {loading ? "⬡ Thinking..." : ideas || "Your video ideas will appear here..."}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">CA Differentiator Tips</div>
+        {[
+          "Lead with your credential: \"As a CA, I see this mistake constantly...\"",
+          "Use real numbers & real tax rules — your accuracy is your moat",
+          "Address common myths salaried professionals believe",
+          "Include a 'CA's take' segment to add authority to any topic",
+        ].map((tip, i) => (
+          <div key={i} className="video-row">
+            <span style={{ color: COLORS.accent, fontWeight: 700, fontFamily: "'DM Mono', monospace", fontSize: 12 }}>0{i + 1}</span>
+            <span style={{ fontSize: 13 }}>{tip}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Script() {
+  const [title, setTitle] = useState("");
+  const [duration, setDuration] = useState("8");
+  const [tab, setTab] = useState("outline");
+  const [output, setOutput] = useState({ outline: "", hook: "", script: "" });
+  const [loading, setLoading] = useState(false);
+
+  const generate = async (type) => {
+    if (!title) return;
+    setLoading(true);
+    setTab(type);
+    try {
+      const sys = `You are a YouTube scriptwriter for a faceless finance channel run by a Chartered Accountant. The host never appears on camera. Content is for educated, salaried Indians aged 25-40. Use simple but authoritative language. Leverage the CA credential for credibility.`;
+
+      const prompts = {
+        outline: `Create a detailed script outline for a ${duration}-minute YouTube video titled: "${title}". Include: intro hook idea, 4-5 main sections with key points, and a CTA. Format clearly with section headers.`,
+        hook: `Write 3 different opening hooks (first 30 seconds) for a YouTube video titled: "${title}". Each hook should use a different technique: 1) Bold statement / stat, 2) Relatable pain point, 3) Curiosity gap. Keep each under 60 words.`,
+        script: `Write a full script for a ${duration}-minute YouTube video titled: "${title}". Include: [HOOK], [MAIN CONTENT with clear transitions], [CTA]. Use conversational but authoritative tone. Add [B-ROLL: description] cues. Keep it tight and punchy.`,
+      };
+
+      const res = await callClaude(sys, prompts[type]);
+      setOutput(o => ({ ...o, [type]: res }));
+    } catch {
+      setOutput(o => ({ ...o, [type]: "Error. Please try again." }));
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div>
+      <div className="page-title">AI Script Writer</div>
+      <div className="page-sub">From idea to full script in seconds</div>
+
+      <div className="card section-gap">
+        <div className="card-title">Video Details</div>
+        <div className="flex gap-8 mb-16" style={{ flexWrap: "wrap" }}>
+          <input className="input" placeholder="Video title or topic..." value={title} onChange={e => setTitle(e.target.value)} style={{ flex: 3, minWidth: 200 }} />
+          <select className="input" value={duration} onChange={e => setDuration(e.target.value)} style={{ flex: 1, minWidth: 100 }}>
+            {["5", "8", "10", "12", "15"].map(d => <option key={d} value={d}>{d} mins</option>)}
+          </select>
+        </div>
+
+        <div className="tabs">
+          {["outline", "hook", "script"].map(t => (
+            <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
+              {t === "outline" ? "◈ Outline" : t === "hook" ? "⚡ Hook" : "◎ Full Script"}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-8 mb-12">
+          <button className="btn btn-primary btn-sm" onClick={() => generate(tab)} disabled={loading || !title}>
+            {loading ? "Writing..." : `Generate ${tab}`}
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => generate("outline")} disabled={loading || !title}>Outline</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => generate("hook")} disabled={loading || !title}>Hooks</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => generate("script")} disabled={loading || !title}>Full Script</button>
+        </div>
+
+        <div className={`ai-output ${loading ? "ai-loading" : ""}`} style={{ maxHeight: 400, overflowY: "auto" }}>
+          {loading ? "⬡ Writing your script..." : output[tab] || `Click "Generate ${tab}" to get started...`}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Growth() {
+  const maxSubs = Math.max(...GROWTH_DATA.map(d => d.subs));
+  const maxViews = Math.max(...GROWTH_DATA.map(d => d.views));
+
+  return (
+    <div>
+      <div className="page-title">Channel Growth</div>
+      <div className="page-sub">Track your momentum</div>
+
+      <div className="grid-3 section-gap">
+        {[
+          { val: "1,420", label: "Subscribers", delta: "Goal: 5K by Dec" },
+          { val: "22K", label: "Monthly Views", delta: "+63% vs last month" },
+          { val: "4.8%", label: "Avg CTR", delta: "Above 4% ✓" },
+        ].map(s => (
+          <div className="card" key={s.label}>
+            <div className="stat-val">{s.val}</div>
+            <div className="stat-label">{s.label}</div>
+            <div className="stat-delta">{s.delta}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid-2 section-gap">
+        <div className="card">
+          <div className="card-title">Subscriber Growth</div>
+          <div className="bar-chart">
+            {GROWTH_DATA.map(d => (
+              <div className="bar-wrap" key={d.month}>
+                <div style={{ flex: 1, display: "flex", alignItems: "flex-end", width: "100%" }}>
+                  <div className="bar" style={{ height: `${maxSubs ? (d.subs / maxSubs) * 100 : 0}%` }}></div>
+                </div>
+                <div className="bar-label">{d.month}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: COLORS.muted, marginTop: 8, fontFamily: "'DM Mono', monospace" }}>
+            {GROWTH_DATA[GROWTH_DATA.length - 1].subs.toLocaleString()} total subscribers
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-title">Monthly Views</div>
+          <div className="bar-chart">
+            {GROWTH_DATA.map(d => (
+              <div className="bar-wrap" key={d.month}>
+                <div style={{ flex: 1, display: "flex", alignItems: "flex-end", width: "100%" }}>
+                  <div className="bar" style={{ height: `${maxViews ? (d.views / maxViews) * 100 : 0}%`, background: COLORS.gold + "30" }}></div>
+                </div>
+                <div className="bar-label">{d.month}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: COLORS.muted, marginTop: 8, fontFamily: "'DM Mono', monospace" }}>
+            {GROWTH_DATA[GROWTH_DATA.length - 1].views.toLocaleString()} views this month
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Milestones</div>
+        {[
+          { label: "1K Subscribers", done: true, date: "Mar 2026" },
+          { label: "First 10K views video", done: true, date: "Feb 2026" },
+          { label: "5K Subscribers", done: false, date: "Target: Dec 2026" },
+          { label: "YouTube Partner Program (1K subs ✓ + 4K hours)", done: false, date: "Target: Jun 2026" },
+          { label: "First brand collaboration", done: false, date: "Target: Aug 2026" },
+        ].map((m, i) => (
+          <div key={i} className="video-row">
+            <span style={{ fontSize: 14, color: m.done ? COLORS.accent : COLORS.border }}>{m.done ? "✓" : "○"}</span>
+            <span style={{ flex: 1, fontSize: 13, color: m.done ? COLORS.text : COLORS.textDim }}>{m.label}</span>
+            <span style={{ fontSize: 11, color: m.done ? COLORS.accent : COLORS.muted, fontFamily: "'DM Mono', monospace" }}>{m.date}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Checklist() {
+  const ITEMS = [
+    { id: 1, phase: "Pre-Production", text: "Topic researched & angle confirmed" },
+    { id: 2, phase: "Pre-Production", text: "Script written & reviewed" },
+    { id: 3, phase: "Pre-Production", text: "Thumbnail concept decided" },
+    { id: 4, phase: "Production", text: "Voiceover recorded (clean audio)" },
+    { id: 5, phase: "Production", text: "B-roll / screen recordings done" },
+    { id: 6, phase: "Post-Production", text: "Video edited & exported" },
+    { id: 7, phase: "Post-Production", text: "Thumbnail designed" },
+    { id: 8, phase: "Upload", text: "Title optimised with keywords" },
+    { id: 9, phase: "Upload", text: "Description written (with timestamps)" },
+    { id: 10, phase: "Upload", text: "Tags added (10-15 relevant tags)" },
+    { id: 11, phase: "Upload", text: "End screen & cards added" },
+    { id: 12, phase: "Upload", text: "Shorts version cut & scheduled" },
+    { id: 13, phase: "Post-Upload", text: "Pinned comment added" },
+    { id: 14, phase: "Post-Upload", text: "Shared to communities / socials" },
+  ];
+  const phases = [...new Set(ITEMS.map(i => i.phase))];
+  const [checked, setChecked] = useState({});
+
+  const toggle = id => setChecked(c => ({ ...c, [id]: !c[id] }));
+  const done = Object.values(checked).filter(Boolean).length;
+  const reset = () => setChecked({});
+
+  return (
+    <div>
+      <div className="page-title">Pre-Publish Checklist</div>
+      <div className="page-sub">Every video, every time</div>
+
+      <div className="card section-gap">
+        <div className="flex-between mb-16">
+          <div>
+            <span style={{ fontSize: 28, fontWeight: 800, color: COLORS.accent }}>{done}</span>
+            <span style={{ fontSize: 16, color: COLORS.muted }}> / {ITEMS.length} complete</span>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={reset}>Reset</button>
+        </div>
+        <div style={{ height: 4, background: COLORS.border, borderRadius: 2, marginBottom: 20, overflow: "hidden" }}>
+          <div style={{ height: "100%", width: `${(done / ITEMS.length) * 100}%`, background: COLORS.accent, borderRadius: 2, transition: "width 0.3s" }}></div>
+        </div>
+
+        {phases.map(phase => (
+          <div key={phase} className="mb-16">
+            <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.gold, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>
+              {phase}
+            </div>
+            {ITEMS.filter(i => i.phase === phase).map(item => (
+              <div key={item.id} className="check-item" onClick={() => toggle(item.id)} style={{ cursor: "pointer" }}>
+                <div className={`check-box ${checked[item.id] ? "checked" : ""}`}>
+                  {checked[item.id] && "✓"}
+                </div>
+                <span className={`check-text ${checked[item.id] ? "done" : ""}`}>{item.text}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+export default function App() {
+  const [page, setPage] = useState("dashboard");
+  const [videos, setVideos] = useState(INITIAL_VIDEOS);
+
+  const pages = { dashboard: <Dashboard videos={videos} setPage={setPage} />, schedule: <Schedule videos={videos} setVideos={setVideos} />, ideas: <Ideas />, script: <Script />, growth: <Growth />, checklist: <Checklist /> };
+
+  return (
+    <>
+      <style>{css}</style>
+      <div className="app">
+        <Sidebar active={page} setActive={setPage} />
+        <main className="main">{pages[page]}</main>
+      </div>
+    </>
+  );
+}
