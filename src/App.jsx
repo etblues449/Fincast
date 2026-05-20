@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 
 // ─── Theme ───────────────────────────────────────────────────────────────────
 const COLORS = {
@@ -39,18 +39,66 @@ const INITIAL_VIDEOS = [
   { id: 5, title: "Emergency Fund: The Right Formula", status: "idea", date: "2026-04-27", views: 0, type: "long" },
 ];
 
+// ─── Config (persisted) ─────────────────────────────────────────────────────
+// The original build called the Anthropic API directly with no key, which can
+// never work from a browser. Instead we read a user-supplied key (and optional
+// fincast-worker proxy URL) from localStorage. Nothing is hardcoded or shipped.
+const CONFIG_KEY = "fincast.config.v1";
+const DEFAULT_MODEL = "claude-sonnet-4-6";
+
+function loadConfig() {
+  try {
+    return JSON.parse(localStorage.getItem(CONFIG_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveConfig(cfg) {
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
+}
+
+function isAiConfigured() {
+  return Boolean(loadConfig().apiKey);
+}
+
 // ─── Claude API ───────────────────────────────────────────────────────────────
 async function callClaude(systemPrompt, userPrompt) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const { apiKey, workerUrl, model } = loadConfig();
+  if (!apiKey) {
+    const err = new Error("Add your Anthropic API key in Settings to use AI features.");
+    err.code = "NO_API_KEY";
+    throw err;
+  }
+
+  // Route through the fincast-worker proxy when configured (keeps the key off
+  // cross-origin requests / sidesteps CORS); otherwise call the API directly
+  // using Anthropic's documented browser-access opt-in header.
+  const endpoint = workerUrl
+    ? `${workerUrl.replace(/\/+$/, "")}/proxy/api.anthropic.com/v1/messages`
+    : "https://api.anthropic.com/v1/messages";
+
+  const res = await fetch(endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
+      model: model || DEFAULT_MODEL,
+      max_tokens: 1200,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],
     }),
   });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`API error ${res.status}. ${detail.slice(0, 240)}`);
+  }
+
   const data = await res.json();
   return data.content?.[0]?.text || "";
 }
@@ -154,6 +202,14 @@ const css = `
   .ai-loading { color: ${COLORS.accent}; animation: pulse 1s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
+  /* Notice banner */
+  .notice {
+    display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    border-radius: 8px; font-size: 13px; margin-bottom: 16px;
+    background: #FFD16615; border: 1px solid #FFD16640; color: ${COLORS.gold};
+  }
+  .notice button { background: none; border: none; color: ${COLORS.accent}; font-weight: 700; cursor: pointer; font-family: inherit; font-size: 13px; text-decoration: underline; }
+
   /* Buttons */
   .btn {
     padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 700;
@@ -234,6 +290,7 @@ function Sidebar({ active, setActive }) {
     { id: "script", icon: "◈", label: "AI Script" },
     { id: "growth", icon: "↗", label: "Growth" },
     { id: "checklist", icon: "✓", label: "Pre-publish" },
+    { id: "settings", icon: "⚙", label: "Settings" },
   ];
   return (
     <div className="sidebar">
@@ -262,6 +319,7 @@ function Dashboard({ videos, setPage }) {
   const published = videos.filter(v => v.status === "published");
   const totalViews = published.reduce((a, v) => a + v.views, 0);
   const upcoming = videos.filter(v => v.status === "scheduled" || v.status === "draft").slice(0, 3);
+  const topPerformers = [...published].sort((a, b) => b.views - a.views).slice(0, 3);
 
   return (
     <div>
@@ -296,7 +354,7 @@ function Dashboard({ videos, setPage }) {
         </div>
         <div className="card">
           <div className="card-title">Top Performers</div>
-          {published.sort((a, b) => b.views - a.views).slice(0, 3).map(v => (
+          {topPerformers.map(v => (
             <div className="video-row" key={v.id}>
               <span className="video-title">{v.title}</span>
               <span className="video-views">{v.views.toLocaleString()} ▶</span>
@@ -409,11 +467,22 @@ function Schedule({ videos, setVideos }) {
   );
 }
 
-function Ideas() {
+function AiNotice({ setPage }) {
+  return (
+    <div className="notice">
+      <span>⚠</span>
+      <span>AI features need an Anthropic API key.</span>
+      <button onClick={() => setPage("settings")}>Open Settings →</button>
+    </div>
+  );
+}
+
+function Ideas({ setPage }) {
   const [topic, setTopic] = useState("");
   const [style, setStyle] = useState("evergreen");
   const [ideas, setIdeas] = useState("");
   const [loading, setLoading] = useState(false);
+  const configured = isAiConfigured();
 
   const generate = async () => {
     setLoading(true);
@@ -423,8 +492,8 @@ function Ideas() {
       const prompt = `Generate 6 YouTube video ideas for: "${topic || "personal finance and investing"}". Style: ${style}. Make them specific, relatable to salaried Indians, and authoritative.`;
       const res = await callClaude(sys, prompt);
       setIdeas(res);
-    } catch {
-      setIdeas("Error generating ideas. Please try again.");
+    } catch (e) {
+      setIdeas(e.message || "Error generating ideas. Please try again.");
     }
     setLoading(false);
   };
@@ -433,6 +502,8 @@ function Ideas() {
     <div>
       <div className="page-title">AI Video Ideas</div>
       <div className="page-sub">Generate content ideas tailored to your CA niche</div>
+
+      {!configured && <AiNotice setPage={setPage} />}
 
       <div className="card section-gap">
         <div className="card-title">What do you want to cover?</div>
@@ -472,12 +543,13 @@ function Ideas() {
   );
 }
 
-function Script() {
+function Script({ setPage }) {
   const [title, setTitle] = useState("");
   const [duration, setDuration] = useState("8");
   const [tab, setTab] = useState("outline");
   const [output, setOutput] = useState({ outline: "", hook: "", script: "" });
   const [loading, setLoading] = useState(false);
+  const configured = isAiConfigured();
 
   const generate = async (type) => {
     if (!title) return;
@@ -494,8 +566,8 @@ function Script() {
 
       const res = await callClaude(sys, prompts[type]);
       setOutput(o => ({ ...o, [type]: res }));
-    } catch {
-      setOutput(o => ({ ...o, [type]: "Error. Please try again." }));
+    } catch (e) {
+      setOutput(o => ({ ...o, [type]: e.message || "Error. Please try again." }));
     }
     setLoading(false);
   };
@@ -504,6 +576,8 @@ function Script() {
     <div>
       <div className="page-title">AI Script Writer</div>
       <div className="page-sub">From idea to full script in seconds</div>
+
+      {!configured && <AiNotice setPage={setPage} />}
 
       <div className="card section-gap">
         <div className="card-title">Video Details</div>
@@ -679,12 +753,96 @@ function Checklist() {
   );
 }
 
+function Settings() {
+  const initial = loadConfig();
+  const [apiKey, setApiKey] = useState(initial.apiKey || "");
+  const [workerUrl, setWorkerUrl] = useState(initial.workerUrl || "");
+  const [model, setModel] = useState(initial.model || DEFAULT_MODEL);
+  const [saved, setSaved] = useState(false);
+
+  const save = () => {
+    saveConfig({ apiKey: apiKey.trim(), workerUrl: workerUrl.trim(), model: model.trim() || DEFAULT_MODEL });
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1800);
+  };
+
+  const clear = () => {
+    localStorage.removeItem(CONFIG_KEY);
+    setApiKey(""); setWorkerUrl(""); setModel(DEFAULT_MODEL);
+    setSaved(false);
+  };
+
+  return (
+    <div>
+      <div className="page-title">Settings</div>
+      <div className="page-sub">Connect AI · stored only in this browser</div>
+
+      <div className="card section-gap" style={{ maxWidth: 560 }}>
+        <div className="card-title">Anthropic API</div>
+
+        <div className="mb-16">
+          <div className="text-muted mb-4">API key</div>
+          <input
+            className="input"
+            type="password"
+            placeholder="sk-ant-..."
+            value={apiKey}
+            onChange={e => setApiKey(e.target.value)}
+            autoComplete="off"
+          />
+        </div>
+
+        <div className="mb-16">
+          <div className="text-muted mb-4">Worker proxy URL (optional)</div>
+          <input
+            className="input"
+            placeholder="https://fincast-worker.<you>.workers.dev"
+            value={workerUrl}
+            onChange={e => setWorkerUrl(e.target.value)}
+          />
+          <div className="text-muted" style={{ marginTop: 6 }}>
+            Leave blank to call the API directly from the browser. Set this to route
+            through your fincast-worker (recommended).
+          </div>
+        </div>
+
+        <div className="mb-16">
+          <div className="text-muted mb-4">Model</div>
+          <input className="input" value={model} onChange={e => setModel(e.target.value)} />
+        </div>
+
+        <div className="flex gap-8">
+          <button className="btn btn-primary" onClick={save}>{saved ? "Saved ✓" : "Save"}</button>
+          <button className="btn btn-ghost" onClick={clear}>Clear</button>
+        </div>
+      </div>
+
+      <div className="card" style={{ maxWidth: 560 }}>
+        <div className="card-title">How it works</div>
+        <div style={{ fontSize: 13, color: COLORS.textDim, lineHeight: 1.7 }}>
+          Your key is saved in this browser's localStorage and sent only with AI
+          requests. Nothing is committed to the repo. For production, route through
+          the fincast-worker proxy so the key isn't exposed in cross-origin requests.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [page, setPage] = useState("dashboard");
   const [videos, setVideos] = useState(INITIAL_VIDEOS);
 
-  const pages = { dashboard: <Dashboard videos={videos} setPage={setPage} />, schedule: <Schedule videos={videos} setVideos={setVideos} />, ideas: <Ideas />, script: <Script />, growth: <Growth />, checklist: <Checklist /> };
+  const pages = {
+    dashboard: <Dashboard videos={videos} setPage={setPage} />,
+    schedule: <Schedule videos={videos} setVideos={setVideos} />,
+    ideas: <Ideas setPage={setPage} />,
+    script: <Script setPage={setPage} />,
+    growth: <Growth />,
+    checklist: <Checklist />,
+    settings: <Settings />,
+  };
 
   return (
     <>
